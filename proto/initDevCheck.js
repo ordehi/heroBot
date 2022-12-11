@@ -9,14 +9,16 @@ const pattern = {
       checkType: 'namespace',
       target: 'window.hj',
       matchValue: true,
-      matchType: 'loose',
+      looseMatch: true,
+      isEnd: false,
     },
     {
       checkName: 'hjId',
       checkType: 'namespace',
       target: 'window.hjSiteSettings.site_id',
       matchValue: 14,
-      matchType: 'strict',
+      looseMatch: false,
+      isEnd: true,
     },
   ],
   actions: [
@@ -32,24 +34,9 @@ const pattern = {
     },
   ],
   flows: {
-    ifMatch: {
-      effect: 'clearInterval',
-      output: null,
-      reference: 'tcCheck',
-    },
-    ifNull: {
-      effect: null,
-      output: null,
-      reference: null,
-    },
-    ifNotMatch: {
-      effect: null,
-      output: 'hjId',
-      reference: null,
-    },
     ifEnd: {
       effect: 'clearInterval',
-      output: null,
+      output: (value) => console.log(`Hotjar ID is ${value}`),
       reference: 'tcCheck',
     },
   },
@@ -80,7 +67,9 @@ const interaction = (actions) => {
 
 // object with methods that perform checks
 const checkMethods = {
-  namespace: (checkName, target, matchValue, matchType) => {
+  namespace: (checkObj) => {
+    // destructure the checkObj
+    const { checkName, target, matchValue, looseMatch, isEnd } = checkObj;
     // split the target string into an array
     const targetArray = target.split('.');
     // iterate through the targetArray
@@ -94,14 +83,13 @@ const checkMethods = {
       result[checkName] = result[checkName][target];
     });
 
-    // if the matchType is loose, return the result
-    if (matchType === 'loose') {
-      return !!result[checkName];
-    }
-    // if the matchType is strict, return the result
-    if (matchType === 'strict') {
-      return result[checkName] === matchValue;
-    }
+    return {
+      check: checkObj,
+      value: result[checkName],
+      evaluation: looseMatch
+        ? !!result[checkName]
+        : result[checkName] === matchValue,
+    };
   },
 };
 
@@ -109,36 +97,45 @@ const checkMethods = {
 const runChecks = (checks) => {
   const resultOfChecks = {};
   checks.forEach((check) => {
-    const { checkName, checkType, target, matchValue, matchType } = check;
-    const result = checkMethods[checkType](
-      checkName,
-      target,
-      matchValue,
-      matchType
-    );
-    resultOfChecks[checkName] = result;
+    const result = checkMethods[check.checkType](check);
+    resultOfChecks[check.checkName] = result;
   });
 
   return resultOfChecks;
 };
 
+// object called flowsMethods that contains methods that perform actions based on the result of the checks
+const flowsMethods = {
+  clearInterval: (reference) => {
+    clearInterval(reference);
+  },
+};
+
+// function checkResults that takes in the resultOfChecks object and the flows object and performs the appropriate action based on the result of the checks
+const checkResults = (state, flows) => {
+  const { timer, timeout, reference, resultOfChecks } = state;
+  const { ifEnd } = flows;
+  const { effect, output } = ifEnd;
+
+  Object.keys(resultOfChecks).forEach((result) => {
+    const { check, evaluation, value } = resultOfChecks[result];
+    if ((check['isEnd'] && evaluation) || timer >= timeout) {
+      flowsMethods[effect](reference);
+      output(value);
+    }
+  });
+};
+
 // function that creates an interval that runs the checks and interaction functions
 const initDevCheck = (pattern) => {
-  // destructure the pattern object
   const { descriptor, interval, timeout, checks, actions, flows } = pattern;
-  // create an interval
-  let timer = 0;
-  const routine = setInterval(() => {
-    // call the checks function
+  const state = {};
+  state.timer = 0;
+  state.timeout = timeout;
+  state.reference = setInterval(() => {
     interaction(actions);
-    const resultOfChecks = runChecks(checks);
-    // if the result of the checks is true, call clearInterval and return the result
-    if (resultOfChecks.hjId || timer > timeout) {
-      clearInterval(routine);
-      console.log(resultOfChecks);
-      return resultOfChecks;
-    }
-    // increment the timer
-    timer += interval;
+    state.resultOfChecks = runChecks(checks);
+    checkResults(state, flows);
+    state.timer += interval;
   }, interval);
 };
